@@ -17,14 +17,23 @@ const userLocks = new Map(); // New lock mechanism
  * and sending the response back to the user.
  */
 const processUserMessage = async (ctx, { flowDynamic, state, provider }) => {
+    console.log('Typing...');
     await typing(ctx, provider);
-    const response = await toAsk(ASSISTANT_ID, ctx.body, state);
+    console.log('Finished typing.');
 
-    // Split the response into chunks and send them sequentially
-    const chunks = response.split(/\n\n+/);
-    for (const chunk of chunks) {
-        const cleanedChunk = chunk.trim().replace(/【.*?】[ ] /g, "");
-        await flowDynamic([{ body: cleanedChunk }]);
+    try {
+        const response = await toAsk(ASSISTANT_ID, ctx.body, state);
+        console.log('Response from OpenAI:', response);
+
+        // Split the response into chunks and send them sequentially
+        const chunks = response.split(/\n\n+/);
+        for (const chunk of chunks) {
+            const cleanedChunk = chunk.trim().replace(/【.*?】[ ] /g, "");
+            console.log('Sending chunk:', cleanedChunk);
+            await flowDynamic([{ body: cleanedChunk }]);
+        }
+    } catch (error) {
+        console.error('Error processing user message:', error);
     }
 };
 
