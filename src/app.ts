@@ -84,7 +84,7 @@ const welcomeFlow = addKeyword<BaileysProvider, MemoryDB>(EVENTS.WELCOME)
     .addAction(async (ctx, { flowDynamic, state, provider }) => {
         const userId = ctx.from;
 
-        const contactData = await kommoService.searchContactByPhone(userId);
+        const contactData = await kommoService.searchContactsByPhone(userId);
         console.log('Contact data from Kommo:', contactData);
 
         if (!userQueues.has(userId)) {
