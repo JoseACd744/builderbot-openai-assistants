@@ -1,75 +1,102 @@
-import "dotenv/config"
-import { createBot, createProvider, createFlow, addKeyword, EVENTS } from '@builderbot/bot'
-import { MemoryDB } from '@builderbot/bot'
-import { BaileysProvider } from '@builderbot/provider-baileys'
-import { toAsk, httpInject } from "@builderbot-plugins/openai-assistants"
-import { typing } from "./utils/presence"
+import "dotenv/config";
+import { createBot, createProvider, createFlow, addKeyword, EVENTS } from '@builderbot/bot';
+import { MemoryDB } from '@builderbot/bot';
+import { BaileysProvider } from '@builderbot/provider-baileys';
+import { toAsk, httpInject } from "@builderbot-plugins/openai-assistants";
+import { typing } from "./utils/presence";
+import { KommoService } from './kommoService';
+import fs from 'fs';
 
-/** Puerto en el que se ejecutará el servidor */
-const PORT = process.env.PORT ?? 3008
-/** ID del asistente de OpenAI */
-const ASSISTANT_ID = process.env.ASSISTANT_ID ?? ''
+const PORT = process.env.PORT ?? 3008;
+const ASSISTANT_ID = process.env.ASSISTANT_ID ?? '';
+const KOMMO_API_KEY = process.env.KOMMO_API_KEY ?? '';
+const KOMMO_SUBDOMAIN = process.env.KOMMO_SUBDOMAIN ?? '';
+
+const SESSION_FILE_PATH = './whatsapp-session.json';
+
+const saveSession = (session) => {
+    fs.writeFileSync(SESSION_FILE_PATH, JSON.stringify(session, null, 2));
+};
+
+const loadSession = () => {
+    if (fs.existsSync(SESSION_FILE_PATH)) {
+        const sessionData = fs.readFileSync(SESSION_FILE_PATH, 'utf-8'); // Especifica 'utf-8' para obtener un string
+        return JSON.parse(sessionData);
+    }
+    return null;
+};
+
+const kommoService = new KommoService(KOMMO_API_KEY, KOMMO_SUBDOMAIN);
+
 const userQueues = new Map();
-const userLocks = new Map(); // New lock mechanism
+const userLocks = new Map();
 
-/**
- * Function to process the user's message by sending it to the OpenAI API
- * and sending the response back to the user.
- */
 const processUserMessage = async (ctx, { flowDynamic, state, provider }) => {
     console.log('Typing...');
     await typing(ctx, provider);
     console.log('Finished typing.');
-
+    
     try {
         const response = await toAsk(ASSISTANT_ID, ctx.body, state);
         console.log('Response from OpenAI:', response);
-
-        // Split the response into chunks and send them sequentially
-        const chunks = response.split(/\n\n+/);
-        for (const chunk of chunks) {
-            const cleanedChunk = chunk.trim().replace(/【.*?】[ ] /g, "");
-            console.log('Sending chunk:', cleanedChunk);
-            await flowDynamic([{ body: cleanedChunk }]);
+    
+        let shouldSendMessages = true;
+    
+        if (response.includes("¡Por supuesto! En un momento un asesor especializado se comunicará contigo para ayudarte.")) {
+            const phoneNumber = ctx.from;
+            const targetStatusId = 70275183;
+            const targetPipelineId = 9013159;
+            const newStatusId = 70275187;
+            const newResponsibleUserId = 9295299;
+    
+            await kommoService.processLeadsForPhone(phoneNumber, targetStatusId, targetPipelineId, newStatusId, newResponsibleUserId);
+    
+            console.log(`No se enviarán más mensajes al número ${phoneNumber}`);
+            shouldSendMessages = false;
+        }
+    
+        if (shouldSendMessages) {
+            const chunks = response.split(/\n\n+/);
+            for (const chunk of chunks) {
+                const cleanedChunk = chunk.trim().replace(/【.*?】[ ] /g, "");
+                console.log('Sending chunk:', cleanedChunk);
+                await flowDynamic([{ body: cleanedChunk }]);
+            }
         }
     } catch (error) {
         console.error('Error processing user message:', error);
     }
 };
 
-/**
- * Function to handle the queue for each user.
- */
 const handleQueue = async (userId) => {
     const queue = userQueues.get(userId);
-    
+
     if (userLocks.get(userId)) {
-        return; // If locked, skip processing
+        return;
     }
 
     while (queue.length > 0) {
-        userLocks.set(userId, true); // Lock the queue
+        userLocks.set(userId, true);
         const { ctx, flowDynamic, state, provider } = queue.shift();
         try {
             await processUserMessage(ctx, { flowDynamic, state, provider });
         } catch (error) {
             console.error(`Error processing message for user ${userId}:`, error);
         } finally {
-            userLocks.set(userId, false); // Release the lock
+            userLocks.set(userId, false);
         }
     }
 
-    userLocks.delete(userId); // Remove the lock once all messages are processed
-    userQueues.delete(userId); // Remove the queue once all messages are processed
+    userLocks.delete(userId);
+    userQueues.delete(userId);
 };
 
-/**
- * Flujo de bienvenida que maneja las respuestas del asistente de IA
- * @type {import('@builderbot/bot').Flow<BaileysProvider, MemoryDB>}
- */
 const welcomeFlow = addKeyword<BaileysProvider, MemoryDB>(EVENTS.WELCOME)
     .addAction(async (ctx, { flowDynamic, state, provider }) => {
-        const userId = ctx.from; // Use the user's ID to create a unique queue for each user
+        const userId = ctx.from;
+
+        const contactData = await kommoService.searchContactByPhone(userId);
+        console.log('Contact data from Kommo:', contactData);
 
         if (!userQueues.has(userId)) {
             userQueues.set(userId, []);
@@ -78,43 +105,25 @@ const welcomeFlow = addKeyword<BaileysProvider, MemoryDB>(EVENTS.WELCOME)
         const queue = userQueues.get(userId);
         queue.push({ ctx, flowDynamic, state, provider });
 
-        // If this is the only message in the queue, process it immediately
         if (!userLocks.get(userId) && queue.length === 1) {
             await handleQueue(userId);
         }
     });
 
-/**
- * Función principal que configura y inicia el bot
- * @async
- * @returns {Promise<void>}
- */
 const main = async () => {
-    /**
-     * Flujo del bot
-     * @type {import('@builderbot/bot').Flow<BaileysProvider, MemoryDB>}
-     */
     const adapterFlow = createFlow([welcomeFlow]);
 
-    /**
-     * Proveedor de servicios de mensajería
-     * @type {BaileysProvider}
-     */
+    const session = loadSession();
     const adapterProvider = createProvider(BaileysProvider, {
         groupsIgnore: true,
         readStatus: false,
+        session, // Load the session here
     });
 
-    /**
-     * Base de datos en memoria para el bot
-     * @type {MemoryDB}
-     */
+    adapterProvider.on('session-validated', saveSession); // Save the session when validated
+
     const adapterDB = new MemoryDB();
 
-    /**
-     * Configuración y creación del bot
-     * @type {import('@builderbot/bot').Bot<BaileysProvider, MemoryDB>}
-     */
     const { httpServer } = await createBot({
         flow: adapterFlow,
         provider: adapterProvider,
