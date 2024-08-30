@@ -24,7 +24,7 @@ export class KommoService {
     }
 
     // Método para buscar un contacto por teléfono y obtener sus leads asociados
-    public async searchContactByPhone(phoneNumber: string): Promise<Contact | null> {
+    public async searchContactsByPhone(phoneNumber: string): Promise<Contact[]> {
         const options = {
             method: 'GET',
             headers: {
@@ -38,22 +38,20 @@ export class KommoService {
         try {
             const response = await fetch(url, options);
             const data = await response.json();
-            
-            //Verificar que se encontró un contacto y que tiene leads asociados, puede haber mas  de un contacto con el mismo numero
-            
+
+            // Verificar que se encontraron contactos
             if (data._embedded && data._embedded.contacts && data._embedded.contacts.length > 0) {
-                const contact = data._embedded.contacts[1];
-                return {
+                return data._embedded.contacts.map((contact: any) => ({
                     id: contact.id,
                     name: contact.name,
-                    leads: contact._embedded.leads,
-                };
+                    leads: contact._embedded.leads || [],
+                }));
             }
 
-            return null;
+            return [];
         } catch (error) {
-            console.error('Error fetching contact from Kommo:', error);
-            return null;
+            console.error('Error fetching contacts from Kommo:', error);
+            return [];
         }
     }
 
@@ -150,28 +148,30 @@ export class KommoService {
 
     // Método principal para el flujo completo
     public async processLeadsForPhone(phoneNumber: string, targetStatusId: number, targetPipelineId: number, newStatusId: number, newResponsibleUserId: number): Promise<void> {
-        // Buscar contacto por teléfono
-        const contact = await this.searchContactByPhone(phoneNumber);
+        // Buscar contactos por teléfono
+        const contacts = await this.searchContactsByPhone(phoneNumber);
 
-        if (!contact) {
+        if (contacts.length === 0) {
             console.log('No se encontró ningún contacto con ese número de teléfono.');
             return;
         }
 
-        // Obtener y verificar cada lead asociado
-        for (const lead of contact.leads) {
-            const leadData = await this.getLeadById(lead.id);
+        // Iterar sobre todos los contactos y sus leads
+        for (const contact of contacts) {
+            for (const lead of contact.leads) {
+                const leadData = await this.getLeadById(lead.id);
 
-            if (leadData && leadData.status_id === targetStatusId && leadData.pipeline_id === targetPipelineId) {
-                // Actualizar el lead si cumple las condiciones
-                const updateSuccess = await this.updateLeadStatusAndUser(lead.id, newStatusId, newResponsibleUserId);
+                if (leadData && leadData.status_id === targetStatusId && leadData.pipeline_id === targetPipelineId) {
+                    // Actualizar el lead si cumple las condiciones
+                    const updateSuccess = await this.updateLeadStatusAndUser(lead.id, newStatusId, newResponsibleUserId);
 
-                if (updateSuccess) {
-                    console.log(`Lead con ID ${lead.id} actualizado correctamente y tarea creada.`);
-                } else {
-                    console.log(`Error al actualizar el lead con ID ${lead.id}.`);
+                    if (updateSuccess) {
+                        console.log(`Lead con ID ${lead.id} del contacto ${contact.name} actualizado correctamente y tarea creada.`);
+                        return; // Termina el proceso una vez que se actualiza un lead
+                    } else {
+                        console.log(`Error al actualizar el lead con ID ${lead.id} del contacto ${contact.name}.`);
+                    }
                 }
-                return; // Termina el proceso una vez que se actualiza un lead
             }
         }
 

@@ -5,26 +5,11 @@ import { BaileysProvider } from '@builderbot/provider-baileys';
 import { toAsk, httpInject } from "@builderbot-plugins/openai-assistants";
 import { typing } from "./utils/presence";
 import { KommoService } from './kommoService';
-import fs from 'fs';
 
 const PORT = process.env.PORT ?? 3008;
 const ASSISTANT_ID = process.env.ASSISTANT_ID ?? '';
 const KOMMO_API_KEY = process.env.KOMMO_API_KEY ?? '';
 const KOMMO_SUBDOMAIN = process.env.KOMMO_SUBDOMAIN ?? '';
-
-const SESSION_FILE_PATH = './whatsapp-session.json';
-
-const saveSession = (session) => {
-    fs.writeFileSync(SESSION_FILE_PATH, JSON.stringify(session, null, 2));
-};
-
-const loadSession = () => {
-    if (fs.existsSync(SESSION_FILE_PATH)) {
-        const sessionData = fs.readFileSync(SESSION_FILE_PATH, 'utf-8'); // Especifica 'utf-8' para obtener un string
-        return JSON.parse(sessionData);
-    }
-    return null;
-};
 
 const kommoService = new KommoService(KOMMO_API_KEY, KOMMO_SUBDOMAIN);
 
@@ -53,6 +38,10 @@ const processUserMessage = async (ctx, { flowDynamic, state, provider }) => {
     
             console.log(`No se enviarán más mensajes al número ${phoneNumber}`);
             shouldSendMessages = false;
+
+            // Eliminar el número de userQueues y userLocks
+            userQueues.delete(phoneNumber);
+            userLocks.delete(phoneNumber);
         }
     
         if (shouldSendMessages) {
@@ -113,14 +102,12 @@ const welcomeFlow = addKeyword<BaileysProvider, MemoryDB>(EVENTS.WELCOME)
 const main = async () => {
     const adapterFlow = createFlow([welcomeFlow]);
 
-    const session = loadSession();
     const adapterProvider = createProvider(BaileysProvider, {
         groupsIgnore: true,
         readStatus: false,
-        session, // Load the session here
+        presenceUpdate: false,
     });
 
-    adapterProvider.on('session-validated', saveSession); // Save the session when validated
 
     const adapterDB = new MemoryDB();
 
